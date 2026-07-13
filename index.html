@@ -1,55 +1,322 @@
-// Función serverless de Vercel: /api/translate
-// La API key vive en la variable de entorno GEMINI_API_KEY (nunca llega al navegador).
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Puente · Traductor de viaje</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#101418;
+    --panel:#1a2027;
+    --line:#2a323c;
+    --text:#eef2f5;
+    --muted:#8a97a3;
+    --es:#f5a524;        /* ámbar: español */
+    --es-dark:#3a2c10;
+    --en:#38bdf8;        /* celeste: inglés */
+    --en-dark:#0f2a38;
+    --danger:#f87171;
   }
-
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY no configurada en Vercel' });
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:'Inter',system-ui,sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+    height:100dvh;
   }
-
-  const { text, from } = req.body || {};
-  if (!text || !['es', 'en'].includes(from)) {
-    return res.status(400).json({ error: 'Parámetros inválidos' });
+  header{
+    padding:14px 18px 10px;display:flex;align-items:baseline;justify-content:space-between;
+    border-bottom:1px solid var(--line);flex-shrink:0;
   }
-  if (text.length > 1000) {
-    return res.status(400).json({ error: 'Texto demasiado largo' });
+  header h1{font-family:'Archivo',sans-serif;font-weight:800;font-size:20px;letter-spacing:-.02em}
+  header h1 span{color:var(--es)}
+  header h1 b{color:var(--en);font-weight:800}
+  header .sub{font-size:11px;color:var(--muted)}
+  #status{
+    flex-shrink:0;padding:6px 18px;font-size:13px;color:var(--muted);
+    min-height:30px;display:flex;align-items:center;gap:8px;
   }
+  #status.live{color:var(--text)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}
+  .dot.rec{background:var(--danger);animation:pulse 1s infinite}
+  .dot.busy{background:var(--es);animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.35}}
 
-  const instr = from === 'es'
-    ? 'Translate this Spanish phrase to natural, conversational American English.'
-    : 'Traducí esta frase del inglés a español rioplatense natural (voseo, nada de "tú").';
+  #chat{
+    flex:1;overflow-y:auto;padding:12px 14px 16px;display:flex;flex-direction:column;gap:12px;
+    -webkit-overflow-scrolling:touch;
+  }
+  .empty{
+    margin:auto;text-align:center;color:var(--muted);font-size:14px;line-height:1.7;max-width:300px;
+  }
+  .empty strong{color:var(--text)}
+  .msg{max-width:88%;border-radius:16px;padding:12px 14px;line-height:1.45;position:relative}
+  .msg .orig{font-size:12px;color:var(--muted);margin-bottom:5px}
+  .msg .trad{font-family:'Archivo',sans-serif;font-weight:700;font-size:19px;letter-spacing:-.01em}
+  .msg.es{align-self:flex-start;background:var(--es-dark);border:1px solid #5c4415}
+  .msg.es .trad{color:#ffe9c2}
+  .msg.en{align-self:flex-end;background:var(--en-dark);border:1px solid #1c4a63}
+  .msg.en .trad{color:#d8f1fd}
+  .msg .replay{
+    position:absolute;top:8px;right:10px;font-size:15px;background:none;border:none;
+    color:var(--muted);cursor:pointer;padding:2px;
+  }
+  .msg .tag{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:6px}
 
-  try {
-    const r = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + key,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: instr +
-                ' It is part of a live spoken conversation between travelers.' +
-                ' Reply ONLY with the translation, no quotes, no explanations.\n\n' + text
-            }]
-          }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 300 }
-        })
-      }
-    );
-    const data = await r.json();
-    const translation = ((data.candidates || [])[0]?.content?.parts || [])
-      .map(p => p.text || '').join(' ').trim();
+  #controls{
+    flex-shrink:0;display:grid;grid-template-columns:1fr 1fr;gap:10px;
+    padding:10px 14px calc(14px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--line);background:var(--panel);
+  }
+  .talk{
+    border:none;border-radius:18px;padding:20px 10px 16px;cursor:pointer;
+    font-family:'Archivo',sans-serif;font-weight:800;font-size:20px;letter-spacing:-.01em;
+    display:flex;flex-direction:column;align-items:center;gap:4px;
+    transition:transform .08s ease, filter .08s ease;
+    user-select:none;-webkit-user-select:none;touch-action:manipulation;
+  }
+  .talk small{font-family:'Inter';font-weight:500;font-size:11px;opacity:.75;letter-spacing:0}
+  .talk:active{transform:scale(.97)}
+  .talk.recording{filter:brightness(1.25);outline:3px solid rgba(255,255,255,.35)}
+  #btnEs{background:var(--es);color:#231600}
+  #btnEn{background:var(--en);color:#03222f}
+  .talk:disabled{opacity:.45}
 
-    if (!translation) {
-      return res.status(502).json({ error: 'Gemini no devolvió traducción' });
+  #kbrow{grid-column:1/-1;display:flex;gap:8px;display:none}
+  #kbrow.show{display:flex}
+  #kbinput{
+    flex:1;background:var(--bg);border:1px solid var(--line);border-radius:12px;
+    color:var(--text);font-size:16px;padding:12px;font-family:'Inter'
+  }
+  #kbsend{
+    border:none;border-radius:12px;padding:0 18px;font-weight:700;font-size:15px;cursor:pointer;
+    background:var(--text);color:var(--bg);font-family:'Archivo'
+  }
+  #kbtoggle{
+    grid-column:1/-1;background:none;border:none;color:var(--muted);font-size:12px;
+    cursor:pointer;padding:4px;font-family:'Inter'
+  }
+  #kbtoggle u{text-decoration:none;border-bottom:1px dotted var(--muted)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Puente</span> · ES <b>⇄</b> EN</h1>
+  <div class="sub">tocá tu botón y hablá</div>
+</header>
+
+<div id="status"><div class="dot" id="dot"></div><span id="statusText">Listo · Ready</span></div>
+
+<div id="chat">
+  <div class="empty" id="emptyHint">
+    <strong>Cómo funciona / How it works</strong><br><br>
+    🟠 Vos: tocá <strong>HABLAR</strong>, decí tu frase en español y soltá. El teléfono la dice en inglés.<br><br>
+    🔵 He taps <strong>SPEAK</strong>, says his phrase in English, and the phone says it in Spanish.
+  </div>
+</div>
+
+<div id="controls">
+  <button class="talk" id="btnEs">🎙 HABLAR<small>en español → English</small></button>
+  <button class="talk" id="btnEn">🎙 SPEAK<small>in English → español</small></button>
+  <div id="kbrow">
+    <input id="kbinput" type="text" placeholder="Escribí acá / Type here…" autocomplete="off">
+    <button id="kbsend">→</button>
+  </div>
+  <button id="kbtoggle"><u>¿Sin micrófono? Escribir / No mic? Type instead</u></button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const chat = $('chat'), dot = $('dot'), statusText = $('statusText');
+const btnEs = $('btnEs'), btnEn = $('btnEn');
+let recognition = null, activeLang = null, busy = false;
+let kbLang = 'es';
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function setStatus(txt, mode){
+  statusText.textContent = txt;
+  dot.className = 'dot' + (mode ? ' ' + mode : '');
+  $('status').classList.toggle('live', !!mode);
+}
+
+function setButtons(disabled){
+  btnEs.disabled = disabled; btnEn.disabled = disabled;
+}
+
+// ---------- Speech recognition ----------
+function startListening(lang){
+  if(busy) return;
+  if(!SR){ showKeyboard(lang); setStatus('Micrófono no disponible acá — usá el teclado / Mic unavailable — use the keyboard'); return; }
+  if(recognition){ try{recognition.stop()}catch(e){} }
+
+  recognition = new SR();
+  recognition.lang = lang === 'es' ? 'es-AR' : 'en-US';
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  activeLang = lang;
+
+  const btn = lang === 'es' ? btnEs : btnEn;
+  btn.classList.add('recording');
+  setStatus(lang === 'es' ? 'Escuchando… hablá tranquilo' : 'Listening… go ahead', 'rec');
+
+  let finalText = '';
+  recognition.onresult = (e) => {
+    let interim = '';
+    for(const r of e.results){
+      if(r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
     }
-    return res.status(200).json({ translation });
-  } catch (err) {
-    return res.status(502).json({ error: 'Error llamando a Gemini' });
+    setStatus((finalText + interim) || '…', 'rec');
+  };
+  recognition.onerror = (e) => {
+    btn.classList.remove('recording');
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      showKeyboard(lang);
+      setStatus('Sin permiso de micrófono — usá el teclado / Mic blocked — use the keyboard');
+    } else if(e.error === 'no-speech'){
+      setStatus('No escuché nada, probá de nuevo / Heard nothing, try again');
+    } else {
+      setStatus('Error de micrófono (' + e.error + ') — podés escribir abajo');
+      showKeyboard(lang);
+    }
+  };
+  recognition.onend = () => {
+    btn.classList.remove('recording');
+    if(finalText.trim()){
+      handlePhrase(finalText.trim(), activeLang);
+    } else {
+      if(!busy) setStatus('Listo · Ready');
+    }
+  };
+  try{ recognition.start(); }
+  catch(err){ btn.classList.remove('recording'); showKeyboard(lang); setStatus('No pude iniciar el micrófono — usá el teclado'); }
+}
+
+// Tap = start; tap again (or wait for pause) = stop
+function toggle(lang){
+  const btn = lang === 'es' ? btnEs : btnEn;
+  if(btn.classList.contains('recording')){ try{recognition.stop()}catch(e){} }
+  else startListening(lang);
+}
+btnEs.addEventListener('click', () => toggle('es'));
+btnEn.addEventListener('click', () => toggle('en'));
+
+// ---------- Keyboard fallback ----------
+$('kbtoggle').addEventListener('click', () => {
+  $('kbrow').classList.toggle('show');
+  if($('kbrow').classList.contains('show')) $('kbinput').focus();
+});
+function showKeyboard(lang){
+  kbLang = lang || kbLang;
+  $('kbrow').classList.add('show');
+}
+$('kbsend').addEventListener('click', sendTyped);
+$('kbinput').addEventListener('keydown', e => { if(e.key === 'Enter') sendTyped(); });
+
+function sendTyped(){
+  const txt = $('kbinput').value.trim();
+  if(!txt || busy) return;
+  // Detección simple: si tiene caracteres típicos del español o palabras comunes, es español
+  const esHints = /[áéíóúñ¿¡]|\b(el|la|los|las|que|de|en|un|una|por|para|con|está|hola|dónde|cómo|cuánto|gracias|baño|vuelo)\b/i;
+  const lang = esHints.test(txt) ? 'es' : 'en';
+  $('kbinput').value = '';
+  handlePhrase(txt, lang);
+}
+
+// ---------- Traducción con IA vía backend propio (/api/translate) ----------
+// La key de Gemini vive en Vercel como variable de entorno, nunca en esta página.
+async function serverTranslate(text, fromLang){
+  const res = await fetch('/api/translate', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text, from: fromLang })
+  });
+  if(!res.ok) throw new Error('server');
+  const data = await res.json();
+  return (data.translation || '').trim();
+}
+
+// ---------- Translation ----------
+async function handlePhrase(text, fromLang){
+  busy = true; setButtons(true);
+  setStatus(fromLang === 'es' ? 'Traduciendo…' : 'Translating…', 'busy');
+  try{
+    const sl = fromLang === 'es' ? 'es' : 'en';
+    const tl = fromLang === 'es' ? 'en' : 'es';
+    let translated = '';
+
+    // Motor 1: backend propio con Gemini (traducción con IA)
+    try{ translated = await serverTranslate(text, fromLang); }catch(e){ /* cae a Google */ }
+
+    // Motor 2: endpoint público de Google Translate (gratis, sin key)
+    if(!translated){
+    try{
+      const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=' + sl +
+                  '&tl=' + tl + '&dt=t&q=' + encodeURIComponent(text);
+      const res = await fetch(url);
+      const data = await res.json();
+      translated = (data[0] || []).map(seg => seg[0]).join('').trim();
+    }catch(e){ /* cae al fallback */ }
+    }
+
+    // Fallback: MyMemory (gratis, sin key, límite diario amplio)
+    if(!translated){
+      const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) +
+                  '&langpair=' + sl + '|' + tl;
+      const res = await fetch(url);
+      const data = await res.json();
+      translated = (data.responseData && data.responseData.translatedText || '').trim();
+    }
+
+    if(!translated) throw new Error('empty');
+    addMessage(text, translated, fromLang);
+    speak(translated, fromLang === 'es' ? 'en-US' : 'es-AR');
+    setStatus('Listo · Ready');
+  }catch(err){
+    setStatus('Falló la traducción, probá de nuevo / Translation failed, try again');
+  }finally{
+    busy = false; setButtons(false);
   }
 }
+
+// ---------- Speech synthesis ----------
+let voices = [];
+function loadVoices(){ voices = speechSynthesis.getVoices(); }
+loadVoices();
+if(typeof speechSynthesis !== 'undefined') speechSynthesis.onvoiceschanged = loadVoices;
+
+function speak(text, lang){
+  if(typeof speechSynthesis === 'undefined') return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  const match = voices.find(v => v.lang === lang) ||
+                voices.find(v => v.lang.startsWith(lang.split('-')[0]));
+  if(match) u.voice = match;
+  u.rate = 0.95;
+  speechSynthesis.speak(u);
+}
+
+// ---------- Chat rendering ----------
+function addMessage(orig, trad, fromLang){
+  const hint = $('emptyHint'); if(hint) hint.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + fromLang;
+  const targetLang = fromLang === 'es' ? 'en-US' : 'es-AR';
+  div.innerHTML =
+    '<button class="replay" title="Repetir / Replay">🔊</button>' +
+    '<div class="orig"></div><div class="trad"></div>' +
+    '<div class="tag">' + (fromLang === 'es' ? 'Español → English' : 'English → Español') + '</div>';
+  div.querySelector('.orig').textContent = orig;
+  div.querySelector('.trad').textContent = trad;
+  div.querySelector('.replay').addEventListener('click', () => speak(trad, targetLang));
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+</script>
+</body>
+</html>
