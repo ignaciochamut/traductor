@@ -156,12 +156,12 @@ function startListening(lang){
   recognition = new SR();
   recognition.lang = lang === 'es' ? 'es-AR' : 'en-US';
   recognition.interimResults = true;
-  recognition.continuous = false;
+  recognition.continuous = true;   // no corta en pausas: hablá tranquilo y tocá el botón para terminar
   activeLang = lang;
 
   const btn = lang === 'es' ? btnEs : btnEn;
   btn.classList.add('recording');
-  setStatus(lang === 'es' ? 'Escuchando… hablá tranquilo' : 'Listening… go ahead', 'rec');
+  setStatus(lang === 'es' ? 'Escuchando… tocá el botón de nuevo al terminar' : 'Listening… tap the button again when done', 'rec');
 
   let finalText = '';
   recognition.onresult = (e) => {
@@ -292,13 +292,17 @@ if(typeof speechSynthesis !== 'undefined') speechSynthesis.onvoiceschanged = loa
 function speak(text, lang){
   if(typeof speechSynthesis === 'undefined') return;
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang;
   const match = voices.find(v => v.lang === lang) ||
                 voices.find(v => v.lang.startsWith(lang.split('-')[0]));
-  if(match) u.voice = match;
-  u.rate = 0.95;
-  speechSynthesis.speak(u);
+  // Trocear en oraciones: los textos largos en una sola tanda se cortan en Android
+  const chunks = (text.match(/[^.!?¡¿]+[.!?]*/g) || [text]).map(s => s.trim()).filter(Boolean);
+  for(const chunk of chunks){
+    const u = new SpeechSynthesisUtterance(chunk);
+    u.lang = lang;
+    if(match) u.voice = match;
+    u.rate = 0.95;
+    speechSynthesis.speak(u);   // se encolan y suenan en orden
+  }
 }
 
 // ---------- Chat rendering ----------
