@@ -75,7 +75,8 @@
     font-family:'Archivo',sans-serif;font-weight:800;font-size:20px;letter-spacing:-.01em;
     display:flex;flex-direction:column;align-items:center;gap:4px;
     transition:transform .08s ease, filter .08s ease;
-    user-select:none;-webkit-user-select:none;touch-action:manipulation;
+    user-select:none;-webkit-user-select:none;touch-action:none;
+    -webkit-touch-callout:none;
   }
   .talk small{font-family:'Inter';font-weight:500;font-size:11px;opacity:.75;letter-spacing:0}
   .talk:active{transform:scale(.97)}
@@ -105,7 +106,7 @@
 
 <header>
   <h1><span>Puente</span> · ES <b>⇄</b> EN</h1>
-  <div class="sub">tocá tu botón y hablá</div>
+  <div class="sub">mantené apretado y hablá</div>
 </header>
 
 <div id="status"><div class="dot" id="dot"></div><span id="statusText">Listo · Ready</span></div>
@@ -113,14 +114,14 @@
 <div id="chat">
   <div class="empty" id="emptyHint">
     <strong>Cómo funciona / How it works</strong><br><br>
-    🟠 Vos: tocá <strong>HABLAR</strong>, decí tu frase en español y soltá. El teléfono la dice en inglés.<br><br>
-    🔵 He taps <strong>SPEAK</strong>, says his phrase in English, and the phone says it in Spanish.
+    🟠 Vos: <strong>mantené apretado</strong> el botón naranja, hablá, y soltá al terminar. El teléfono lo dice en inglés.<br><br>
+    🔵 He <strong>holds down</strong> the blue button, speaks, and releases when done. The phone says it in Spanish.
   </div>
 </div>
 
 <div id="controls">
-  <button class="talk" id="btnEs">🎙 HABLAR<small>en español → English</small></button>
-  <button class="talk" id="btnEn">🎙 SPEAK<small>in English → español</small></button>
+  <button class="talk" id="btnEs">🎙 MANTENÉ<small>y hablá en español</small></button>
+  <button class="talk" id="btnEn">🎙 HOLD<small>and speak English</small></button>
   <div id="kbrow">
     <input id="kbinput" type="text" placeholder="Escribí acá / Type here…" autocomplete="off">
     <button id="kbsend">→</button>
@@ -147,66 +148,84 @@ function setButtons(disabled){
   btnEs.disabled = disabled; btnEn.disabled = disabled;
 }
 
-// ---------- Speech recognition ----------
+// ---------- Speech recognition (pulsar y mantener) ----------
+let heldLang = null;          // idioma del botón que está siendo mantenido
+let finalChunks = [];         // texto final, indexado: nunca se duplica
+
 function startListening(lang){
   if(busy) return;
   if(!SR){ showKeyboard(lang); setStatus('Micrófono no disponible acá — usá el teclado / Mic unavailable — use the keyboard'); return; }
-  if(recognition){ try{recognition.stop()}catch(e){} }
+  if(recognition){ try{ recognition.abort(); }catch(e){} }
 
   recognition = new SR();
   recognition.lang = lang === 'es' ? 'es-AR' : 'en-US';
   recognition.interimResults = true;
-  recognition.continuous = true;   // no corta en pausas: hablá tranquilo y tocá el botón para terminar
+  recognition.continuous = true;
   activeLang = lang;
+  heldLang = lang;
+  finalChunks = [];
 
   const btn = lang === 'es' ? btnEs : btnEn;
   btn.classList.add('recording');
-  setStatus(lang === 'es' ? 'Escuchando… tocá el botón de nuevo al terminar' : 'Listening… tap the button again when done', 'rec');
+  setStatus(lang === 'es' ? 'Escuchando… soltá el botón al terminar' : 'Listening… release the button when done', 'rec');
 
-  let finalText = '';
   recognition.onresult = (e) => {
-    // Reconstruir siempre desde cero: e.results trae la sesión completa,
-    // acumular sobre lo anterior duplica el texto en modo continuo.
-    finalText = '';
+    // Guardar cada resultado en SU posición: si el navegador reenvía
+    // resultados viejos, se sobrescriben en lugar de sumarse.
     let interim = '';
-    for(const r of e.results){
-      if(r.isFinal) finalText += r[0].transcript + ' ';
+    for(let i = 0; i < e.results.length; i++){
+      const r = e.results[i];
+      if(r.isFinal) finalChunks[i] = r[0].transcript.trim();
       else interim += r[0].transcript;
     }
-    setStatus((finalText + interim).trim() || '…', 'rec');
+    const shown = (finalChunks.filter(Boolean).join(' ') + ' ' + interim).trim();
+    setStatus(shown || '…', 'rec');
   };
   recognition.onerror = (e) => {
-    btn.classList.remove('recording');
     if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      stopHold(lang, false);
       showKeyboard(lang);
       setStatus('Sin permiso de micrófono — usá el teclado / Mic blocked — use the keyboard');
-    } else if(e.error === 'no-speech'){
-      setStatus('No escuché nada, probá de nuevo / Heard nothing, try again');
+    } else if(e.error === 'no-speech' || e.error === 'aborted'){
+      /* normal al soltar: lo maneja onend */
     } else {
       setStatus('Error de micrófono (' + e.error + ') — podés escribir abajo');
       showKeyboard(lang);
     }
   };
   recognition.onend = () => {
-    btn.classList.remove('recording');
-    if(finalText.trim()){
-      handlePhrase(finalText.trim(), activeLang);
-    } else {
-      if(!busy) setStatus('Listo · Ready');
+    // Si el navegador corta solo pero el dedo sigue apretado, reanudar.
+    if(heldLang === lang){
+      try{ recognition.start(); return; }catch(e){ /* si no se puede, seguir al envío */ }
     }
+    const btn2 = lang === 'es' ? btnEs : btnEn;
+    btn2.classList.remove('recording');
+    const text = finalChunks.filter(Boolean).join(' ').trim();
+    if(text) handlePhrase(text, lang);
+    else if(!busy) setStatus('Listo · Ready');
   };
   try{ recognition.start(); }
-  catch(err){ btn.classList.remove('recording'); showKeyboard(lang); setStatus('No pude iniciar el micrófono — usá el teclado'); }
+  catch(err){ btn.classList.remove('recording'); heldLang = null; showKeyboard(lang); setStatus('No pude iniciar el micrófono — usá el teclado'); }
 }
 
-// Tap = start; tap again (or wait for pause) = stop
-function toggle(lang){
-  const btn = lang === 'es' ? btnEs : btnEn;
-  if(btn.classList.contains('recording')){ try{recognition.stop()}catch(e){} }
-  else startListening(lang);
+function stopHold(lang, send){
+  if(heldLang !== lang) return;
+  heldLang = null;                      // habilita el cierre en onend
+  try{ recognition && (send ? recognition.stop() : recognition.abort()); }catch(e){}
 }
-btnEs.addEventListener('click', () => toggle('es'));
-btnEn.addEventListener('click', () => toggle('en'));
+
+// Pulsar y mantener: funciona con dedo y con mouse
+function bindHold(btn, lang){
+  const down = (ev) => { ev.preventDefault(); startListening(lang); };
+  const up   = (ev) => { ev.preventDefault(); stopHold(lang, true); };
+  btn.addEventListener('pointerdown', down);
+  btn.addEventListener('pointerup', up);
+  btn.addEventListener('pointercancel', up);
+  btn.addEventListener('pointerleave', up);
+  btn.addEventListener('contextmenu', e => e.preventDefault());  // sin menú al mantener
+}
+bindHold(btnEs, 'es');
+bindHold(btnEn, 'en');
 
 // ---------- Keyboard fallback ----------
 $('kbtoggle').addEventListener('click', () => {
